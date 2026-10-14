@@ -6,7 +6,13 @@ console.log("Logs from your program will appear here!");
 
 
 const server: net.Server = net.createServer((connection: net.Socket) => {
-  // Handle connection
+  connection.on("data", () => {
+    connection.write("+PONG\r\n");
+  });
+
+  connection.on("error", () => {
+    // Ignore socket errors on client disconnect
+  });
 });
 
 server.listen(6379, "127.0.0.1");

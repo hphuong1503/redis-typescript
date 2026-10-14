@@ -31,3 +31,17 @@ Note: This section is for stages 2 and beyond.
    `app/main.ts`.
 1. Run `codecrafters submit` to submit your solution to CodeCrafters. Test
    output will be streamed to your terminal.
+
+---
+
+## 🚀 Tiến Độ Thử Thách (Progress & Milestone Tracker)
+
+| Stage | Slug | Tên Thử Thách | Trạng Thái | Tài Liệu & Đúc Kết |
+| :---: | :---: | :--- | :---: | :--- |
+| **001** | `jm1` | Bind to a port (6379) | ✅ Passed | [📖 Đề bài](./docs/01-core/001-bind-to-a-port.md) |
+| **002** | `rg2` | Respond to PING (+PONG\r\n) | ✅ Passed | [📝 Summary](./docs/summary/002-respond-to-ping-summary.md) \| [📖 Đề bài](./docs/01-core/002-respond-to-ping.md) |
+| **003** | `wy1` | Respond to multiple PINGs | ⏳ Next | [📖 Đề bài](./docs/01-core/003-respond-to-multiple-pings.md) |
+| **004** | `zu2` | Handle concurrent clients | ⏹️ Queued | [📖 Đề bài](./docs/01-core/004-handle-concurrent-clients.md) |
+| **005** | `qq0` | Implement the ECHO command | ⏹️ Queued | [📖 Đề bài](./docs/01-core/005-implement-the-echo-command.md) |
+| **006** | `la7` | Implement SET & GET commands | ⏹️ Queued | [📖 Đề bài](./docs/01-core/006-implement-the-set-and-get-commands.md) |
+| **007** | `yz1` | Expiry with PX option | ⏹️ Queued | [📖 Đề bài](./docs/01-core/007-expiry.md) |
