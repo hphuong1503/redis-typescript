@@ -207,6 +207,13 @@ function handleCommand(socket: net.Socket, args: string[]) {
       break;
     }
 
+    case "LLEN": {
+      const key = args[1];
+      const list = listStore.get(key);
+      socket.write(encodeInteger(list ? list.length : 0));
+      break;
+    }
+
     case "LRANGE": {
       const key = args[1];
       const start = parseInt(args[2], 10);
