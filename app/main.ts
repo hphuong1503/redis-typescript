@@ -1,6 +1,6 @@
 import * as net from "node:net";
 
-// --- RESP Types & Serializer Helpers ---
+// --- RESP Serializer Helpers ---
 
 function encodeSimpleString(str: string): string {
   return `+${str}\r\n`;
@@ -28,10 +28,6 @@ function encodeArray(elements: (string | null)[]): string {
   return res;
 }
 
-function encodeNullArray(): string {
-  return "*-1\r\n";
-}
-
 // --- RESP Parser (Streaming & Pipeline Support) ---
 
 class RespParser {
@@ -46,7 +42,7 @@ class RespParser {
     while (this.buffer.length > 0) {
       const parsed = this.parseOne();
       if (parsed === null) {
-        break; // Incomplete command in buffer, wait for more chunks
+        break; // Incomplete command in buffer
       }
       if (parsed.length > 0) {
         commands.push(parsed);
@@ -103,7 +99,7 @@ class RespParser {
           elements.push(this.buffer.subarray(dataStart, dataEnd).toString("utf-8"));
           offset = nextCrlf;
         } else {
-          // Inline or simple string token inside array
+          // Inline or simple string token
           const nextCrlf = this.buffer.indexOf("\r\n", offset);
           if (nextCrlf === -1) return null;
           elements.push(this.buffer.subarray(offset, nextCrlf).toString("utf-8"));
@@ -126,7 +122,7 @@ class RespParser {
   }
 }
 
-// --- Data Stores ---
+// --- Data Stores (Core & Lists up to Stage 013) ---
 
 interface ValueEntry {
   value: string;
@@ -135,62 +131,6 @@ interface ValueEntry {
 
 const kvStore = new Map<string, ValueEntry>();
 const listStore = new Map<string, string[]>();
-
-// --- BLPOP Waiters ---
-
-interface BLPopWaiter {
-  socket: net.Socket;
-  keys: string[];
-  timer: NodeJS.Timeout | null;
-  resolved: boolean;
-}
-
-const waitersByKey = new Map<string, BLPopWaiter[]>();
-
-function removeWaiter(waiter: BLPopWaiter) {
-  if (waiter.timer) {
-    clearTimeout(waiter.timer);
-    waiter.timer = null;
-  }
-  waiter.resolved = true;
-  for (const k of waiter.keys) {
-    const list = waitersByKey.get(k);
-    if (list) {
-      const idx = list.indexOf(waiter);
-      if (idx !== -1) list.splice(idx, 1);
-      if (list.length === 0) waitersByKey.delete(k);
-    }
-  }
-}
-
-function notifyWaiters(key: string) {
-  const list = listStore.get(key);
-  if (!list || list.length === 0) return;
-
-  const waiters = waitersByKey.get(key);
-  if (!waiters || waiters.length === 0) return;
-
-  while (list.length > 0 && waiters.length > 0) {
-    const waiter = waiters[0];
-    if (waiter.resolved) {
-      waiters.shift();
-      continue;
-    }
-
-    const val = list.shift()!;
-    removeWaiter(waiter);
-
-    try {
-      waiter.socket.write(encodeArray([key, val]));
-    } catch {
-      // socket might be closed
-    }
-  }
-
-  if (list.length === 0) {
-    listStore.delete(key);
-  }
-}
 
 // --- Command Dispatcher ---
 
@@ -251,9 +191,7 @@ function handleCommand(socket: net.Socket, args: string[]) {
       if (!listStore.has(key)) listStore.set(key, []);
       const list = listStore.get(key)!;
       list.push(...elements);
-      const resultingLen = list.length;
-      socket.write(encodeInteger(resultingLen));
-      notifyWaiters(key);
+      socket.write(encodeInteger(list.length));
       break;
     }
 
@@ -265,16 +203,7 @@ function handleCommand(socket: net.Socket, args: string[]) {
       for (const el of elements) {
         list.unshift(el);
       }
-      const resultingLen = list.length;
-      socket.write(encodeInteger(resultingLen));
-      notifyWaiters(key);
-      break;
-    }
-
-    case "LLEN": {
-      const key = args[1];
-      const list = listStore.get(key);
-      socket.write(encodeInteger(list ? list.length : 0));
+      socket.write(encodeInteger(list.length));
       break;
     }
 
@@ -305,80 +234,6 @@ function handleCommand(socket: net.Socket, args: string[]) {
       break;
     }
 
-    case "LPOP": {
-      const key = args[1];
-      const list = listStore.get(key);
-
-      if (args.length > 2) {
-        const count = parseInt(args[2], 10);
-        if (!list || list.length === 0) {
-          socket.write(encodeNullArray());
-        } else {
-          const numToPop = Math.min(count, list.length);
-          const popped = list.splice(0, numToPop);
-          if (list.length === 0) listStore.delete(key);
-          socket.write(encodeArray(popped));
-        }
-      } else {
-        if (!list || list.length === 0) {
-          socket.write(encodeBulkString(null));
-        } else {
-          const item = list.shift()!;
-          if (list.length === 0) listStore.delete(key);
-          socket.write(encodeBulkString(item));
-        }
-      }
-      break;
-    }
-
-    case "BLPOP": {
-      const timeoutSec = parseFloat(args[args.length - 1]);
-      const keys = args.slice(1, args.length - 1);
-
-      // Check if any key already has elements
-      let foundKey: string | null = null;
-      let foundVal: string | null = null;
-
-      for (const k of keys) {
-        const list = listStore.get(k);
-        if (list && list.length > 0) {
-          foundKey = k;
-          foundVal = list.shift()!;
-          if (list.length === 0) listStore.delete(k);
-          break;
-        }
-      }
-
-      if (foundKey !== null && foundVal !== null) {
-        socket.write(encodeArray([foundKey, foundVal]));
-        break;
-      }
-
-      // Block client
-      const waiter: BLPopWaiter = {
-        socket,
-        keys,
-        timer: null,
-        resolved: false,
-      };
-
-      if (timeoutSec > 0) {
-        waiter.timer = setTimeout(() => {
-          if (waiter.resolved) return;
-          removeWaiter(waiter);
-          try {
-            socket.write(encodeNullArray());
-          } catch {}
-        }, timeoutSec * 1000);
-      }
-
-      for (const k of keys) {
-        if (!waitersByKey.has(k)) waitersByKey.set(k, []);
-        waitersByKey.get(k)!.push(waiter);
-      }
-      break;
-    }
-
     case "COMMAND": {
       socket.write("*0\r\n");
       break;
@@ -401,17 +256,6 @@ const server: net.Server = net.createServer((connection: net.Socket) => {
     const commands = parser.parseCommands();
     for (const cmd of commands) {
       handleCommand(connection, cmd);
-    }
-  });
-
-  connection.on("close", () => {
-    for (const [key, waiters] of waitersByKey.entries()) {
-      const remaining = waiters.filter((w) => w.socket !== connection);
-      if (remaining.length === 0) {
-        waitersByKey.delete(key);
-      } else {
-        waitersByKey.set(key, remaining);
-      }
     }
   });
 
