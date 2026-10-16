@@ -136,6 +136,15 @@ interface ValueEntry {
 const kvStore = new Map<string, ValueEntry>();
 const listStore = new Map<string, string[]>();
 
+// --- Stream Store ---
+
+interface StreamEntry {
+  id: string;
+  fields: [string, string][];
+}
+
+const streamStore = new Map<string, StreamEntry[]>();
+
 // --- BLPOP Waiters ---
 
 interface BLPopWaiter {
@@ -373,6 +382,26 @@ function handleCommand(socket: net.Socket, args: string[]) {
       for (const k of keys) {
         if (!waitersByKey.has(k)) waitersByKey.set(k, []);
         waitersByKey.get(k)!.push(waiter);
+      }
+      break;
+    }
+
+    case "TYPE": {
+      const key = args[1];
+      if (streamStore.has(key)) {
+        socket.write(encodeSimpleString("stream"));
+      } else if (listStore.has(key) && listStore.get(key)!.length > 0) {
+        socket.write(encodeSimpleString("list"));
+      } else if (kvStore.has(key)) {
+        const entry = kvStore.get(key)!;
+        if (entry.expiresAt !== null && Date.now() >= entry.expiresAt) {
+          kvStore.delete(key);
+          socket.write(encodeSimpleString("none"));
+        } else {
+          socket.write(encodeSimpleString("string"));
+        }
+      } else {
+        socket.write(encodeSimpleString("none"));
       }
       break;
     }
