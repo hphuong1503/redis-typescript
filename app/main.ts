@@ -145,6 +145,18 @@ interface StreamEntry {
 
 const streamStore = new Map<string, StreamEntry[]>();
 
+function parseStreamId(idStr: string): [bigint, bigint] | null {
+  const parts = idStr.split("-");
+  if (parts.length !== 2) return null;
+  try {
+    const ms = BigInt(parts[0]);
+    const seq = BigInt(parts[1]);
+    return [ms, seq];
+  } catch {
+    return null;
+  }
+}
+
 // --- BLPOP Waiters ---
 
 interface BLPopWaiter {
@@ -420,9 +432,108 @@ function handleCommand(socket: net.Socket, args: string[]) {
         streamStore.set(key, []);
       }
       const stream = streamStore.get(key)!;
-      stream.push({ id, fields });
+      let finalId = id;
 
-      socket.write(encodeBulkString(id));
+      if (id === "*") {
+        // Fully auto-generated ID: *
+        let ms = BigInt(Date.now());
+        let seq = 0n;
+
+        if (stream.length > 0) {
+          const lastEntry = stream[stream.length - 1];
+          const lastParsed = parseStreamId(lastEntry.id);
+          if (lastParsed) {
+            const [lastMs, lastSeq] = lastParsed;
+            if (ms < lastMs) {
+              ms = lastMs;
+              seq = lastSeq + 1n;
+            } else if (ms === lastMs) {
+              seq = lastSeq + 1n;
+            } else {
+              seq = 0n;
+            }
+          }
+        } else {
+          seq = 0n;
+        }
+
+        finalId = `${ms}-${seq}`;
+      } else {
+        const parts = id.split("-");
+        if (parts.length === 2 && parts[1] === "*") {
+          // Partially auto-generated ID: <ms>-*
+          let ms: bigint;
+          try {
+            ms = BigInt(parts[0]);
+          } catch {
+            socket.write(encodeSimpleError("ERR Invalid stream ID"));
+            break;
+          }
+
+          let seq = 0n;
+          if (stream.length > 0) {
+            const lastEntry = stream[stream.length - 1];
+            const lastParsed = parseStreamId(lastEntry.id);
+            if (lastParsed) {
+              const [lastMs, lastSeq] = lastParsed;
+              if (ms < lastMs) {
+                socket.write(
+                  encodeSimpleError(
+                    "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                  )
+                );
+                break;
+              } else if (ms === lastMs) {
+                seq = lastSeq + 1n;
+              } else {
+                seq = ms === 0n ? 1n : 0n;
+              }
+            }
+          } else {
+            seq = ms === 0n ? 1n : 0n;
+          }
+
+          finalId = `${ms}-${seq}`;
+        } else {
+          // Explicit ID
+          const parsed = parseStreamId(id);
+          if (!parsed) {
+            socket.write(encodeSimpleError("ERR Invalid stream ID"));
+            break;
+          }
+          const [currMs, currSeq] = parsed;
+
+          // 1. Must be greater than 0-0
+          if (currMs === 0n && currSeq === 0n) {
+            socket.write(
+              encodeSimpleError(
+                "ERR The ID specified in XADD must be greater than 0-0"
+              )
+            );
+            break;
+          }
+
+          // 2. Must be strictly greater than last entry in stream
+          if (stream.length > 0) {
+            const lastEntry = stream[stream.length - 1];
+            const lastParsed = parseStreamId(lastEntry.id);
+            if (lastParsed) {
+              const [lastMs, lastSeq] = lastParsed;
+              if (currMs < lastMs || (currMs === lastMs && currSeq <= lastSeq)) {
+                socket.write(
+                  encodeSimpleError(
+                    "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+                  )
+                );
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      stream.push({ id: finalId, fields });
+      socket.write(encodeBulkString(finalId));
       break;
     }
 
