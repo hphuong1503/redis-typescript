@@ -406,6 +406,26 @@ function handleCommand(socket: net.Socket, args: string[]) {
       break;
     }
 
+    case "XADD": {
+      const key = args[1];
+      const id = args[2];
+      const fields: [string, string][] = [];
+      for (let i = 3; i < args.length; i += 2) {
+        if (i + 1 < args.length) {
+          fields.push([args[i], args[i + 1]]);
+        }
+      }
+
+      if (!streamStore.has(key)) {
+        streamStore.set(key, []);
+      }
+      const stream = streamStore.get(key)!;
+      stream.push({ id, fields });
+
+      socket.write(encodeBulkString(id));
+      break;
+    }
+
     case "COMMAND": {
       socket.write("*0\r\n");
       break;
