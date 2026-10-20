@@ -157,6 +157,64 @@ function parseStreamId(idStr: string): [bigint, bigint] | null {
   }
 }
 
+interface ParsedBound {
+  isNegInf?: boolean;
+  isPosInf?: boolean;
+  ms: bigint;
+  seq: bigint;
+}
+
+function parseStreamBound(boundStr: string, isStart: boolean): ParsedBound {
+  if (boundStr === "-") {
+    return { isNegInf: true, ms: 0n, seq: 0n };
+  }
+  if (boundStr === "+") {
+    return { isPosInf: true, ms: 0n, seq: 0n };
+  }
+
+  const parts = boundStr.split("-");
+  if (parts.length === 2) {
+    return {
+      ms: BigInt(parts[0]),
+      seq: BigInt(parts[1]),
+    };
+  } else {
+    return {
+      ms: BigInt(parts[0]),
+      seq: isStart ? 0n : 18446744073709551615n,
+    };
+  }
+}
+
+function isEntryInRange(entry: StreamEntry, startBound: ParsedBound, endBound: ParsedBound): boolean {
+  const parsed = parseStreamId(entry.id);
+  if (!parsed) return false;
+  const [ms, seq] = parsed;
+
+  if (!startBound.isNegInf) {
+    if (ms < startBound.ms) return false;
+    if (ms === startBound.ms && seq < startBound.seq) return false;
+  }
+
+  if (!endBound.isPosInf) {
+    if (ms > endBound.ms) return false;
+    if (ms === endBound.ms && seq > endBound.seq) return false;
+  }
+
+  return true;
+}
+
+function encodeStreamEntry(entry: StreamEntry): string {
+  let res = "*2\r\n";
+  res += encodeBulkString(entry.id);
+  res += `*${entry.fields.length * 2}\r\n`;
+  for (const [k, v] of entry.fields) {
+    res += encodeBulkString(k);
+    res += encodeBulkString(v);
+  }
+  return res;
+}
+
 // --- BLPOP Waiters ---
 
 interface BLPopWaiter {
@@ -534,6 +592,35 @@ function handleCommand(socket: net.Socket, args: string[]) {
 
       stream.push({ id: finalId, fields });
       socket.write(encodeBulkString(finalId));
+      break;
+    }
+
+    case "XRANGE": {
+      const key = args[1];
+      const startStr = args[2];
+      const endStr = args[3];
+
+      const stream = streamStore.get(key);
+      if (!stream || stream.length === 0) {
+        socket.write("*0\r\n");
+        break;
+      }
+
+      const startBound = parseStreamBound(startStr, true);
+      const endBound = parseStreamBound(endStr, false);
+
+      const matched: StreamEntry[] = [];
+      for (const entry of stream) {
+        if (isEntryInRange(entry, startBound, endBound)) {
+          matched.push(entry);
+        }
+      }
+
+      let res = `*${matched.length}\r\n`;
+      for (const entry of matched) {
+        res += encodeStreamEntry(entry);
+      }
+      socket.write(res);
       break;
     }
 
